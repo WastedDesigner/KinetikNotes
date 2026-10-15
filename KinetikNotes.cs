@@ -29,13 +29,20 @@ using Microsoft.Win32;
 static class Program
 {
     public const string Version = "1.6.1";
+    // --demo: made-up notes in a temporary folder, no settings read from or saved to this PC.
+    // "--theme Name" picks its theme (for screenshots).
+    public static bool Demo;
+    public static string DemoTheme;
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
     [STAThread]
     static void Main(string[] args)
     {
+        Demo = args.Contains("--demo");
+        int ti = Array.IndexOf(args, "--theme");
+        if (ti >= 0 && ti + 1 < args.Length) DemoTheme = args[ti + 1];
         bool created;
-        using (new Mutex(true, @"Local\KinetikNotes", out created))
+        using (new Mutex(true, Demo ? @"Local\KinetikNotesDemo" : @"Local\KinetikNotes", out created))
         {
             if (!created) return; // already running
             SetProcessDPIAware();
@@ -45,10 +52,42 @@ static class Program
             // "--settings Page" opens the settings window on that page when it starts
             int si = Array.IndexOf(args, "--settings");
             Backup.KeyName = "KinetikNotes"; Backup.AppTitle = "Kinetik Notes";
-            Backup.OfferRestore();
+            if (!Demo) Backup.OfferRestore();
             Application.Run(new NotesForm(si < 0 ? null : si + 1 < args.Length ? args[si + 1] : "General"));
         }
-        Backup.AfterExit();
+        if (!Demo) Backup.AfterExit();
+    }
+}
+
+// ======================================================================= Demo
+// Made-up notes for --demo, written fresh to a temporary folder each time, so the widget can be shown
+// (and screenshotted) without reading anyone's real notes.
+static class DemoData
+{
+    static readonly string[][] Files =
+    {
+        new[] { "Groceries.md", "---\ncolor: green\npinned: true\n---\n# Groceries\n\n- [x] Oat milk\n- [x] Bananas\n- [ ] Sourdough\n- [ ] Coffee beans\n- [ ] Basil\n- [ ] Parmesan\n" },
+        new[] { "Website launch.md", "---\ncolor: blue\ndue: {due}\ntags: [web]\n---\n# Website launch\n\n- [x] Final copy from marketing\n- [x] Compress hero images\n- [ ] Test the contact form\n- [ ] Set up redirects\n- [ ] Announce on socials\n" },
+        new[] { "Weekend.md", "---\ncolor: pink\n---\n# Weekend\n\n- [ ] Farmers market, 8 am\n- [ ] Return library books\n- [x] Book the campsite\n- [ ] Call Grandma\n" },
+        new[] { "Reading list.md", "---\ncolor: purple\ntags: [books]\n---\n# Reading list\n\n- [x] The Left Hand of Darkness\n- [ ] Piranesi\n- [ ] A Psalm for the Wild-Built\n" },
+        new[] { "Ideas.md", "---\ncolor: yellow\n---\n# Ideas\n\nA tiny app that waters the plants **when it rains less than 2 mm** in a week.\n\n- [ ] Sketch the sensor box\n" },
+        new[] { "Gym.md", "---\ncolor: orange\n---\n# Gym\n\n- [x] Mon: legs\n- [x] Wed: push\n- [ ] Fri: pull\n- [ ] Sun: 5 km run\n" },
+    };
+
+    public static Settings Settings()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "KinetikNotesDemo");
+        try
+        {
+            if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir, "*.md")) File.Delete(f);
+            Directory.CreateDirectory(dir);
+            string due = DateTime.Today.AddDays(3).ToString("yyyy-MM-dd");
+            foreach (var f in Files) File.WriteAllText(Path.Combine(dir, f[0]), f[1].Replace("{due}", due));
+        }
+        catch { }
+        var s = new Settings { Folder = dir, Layer = 2, Columns = 3, X = 240, Y = 160, Hotkey = false, ThemeName = Program.DemoTheme ?? "Pastel paper", ShowTags = true };
+        s.Sanitize();
+        return s;
     }
 }
 
@@ -96,6 +135,7 @@ class Settings
     // restored into it or another program has it busy.
     public static Settings Load()
     {
+        if (Program.Demo) return DemoData.Settings();
         Settings s = null;
         for (int attempt = 0; attempt < 4; attempt++)
         {
@@ -152,7 +192,7 @@ class Settings
 
     public void Save()
     {
-        if (Unreadable) return; // never save defaults over settings that couldn't be read
+        if (Program.Demo || Unreadable) return; // never save defaults over settings that couldn't be read
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -989,7 +1029,7 @@ class NotesForm : Form
         Opacity = c.Opacity / 100.0;
         menu.Opening += (s, e) => BuildMenu();
         try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { tray.Icon = SystemIcons.Application; }
-        tray.Text = "Kinetik Notes";
+        tray.Text = Program.Demo ? "Kinetik Notes (demo)" : "Kinetik Notes";
         Backup.BeforeExit = () => tray.Visible = false;
         tray.ContextMenuStrip = menu;
         tray.Visible = true;
