@@ -24,11 +24,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Notes")]
 [assembly: AssemblyProduct("Kinetik Notes")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.6.3.0")]
+[assembly: AssemblyVersion("1.6.4.0")]
 
 static class Program
 {
-    public const string Version = "1.6.3";
+    public const string Version = "1.6.4";
     // --demo: made-up notes in a temporary folder, no settings read from or saved to this PC.
     // "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
