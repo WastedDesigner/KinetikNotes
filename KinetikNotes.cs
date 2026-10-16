@@ -24,11 +24,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Notes")]
 [assembly: AssemblyProduct("Kinetik Notes")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.6.2.0")]
+[assembly: AssemblyVersion("1.6.3.0")]
 
 static class Program
 {
-    public const string Version = "1.6.2";
+    public const string Version = "1.6.3";
     // --demo: made-up notes in a temporary folder, no settings read from or saved to this PC.
     // "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
@@ -53,7 +53,9 @@ static class Program
             int si = Array.IndexOf(args, "--settings");
             Backup.KeyName = "KinetikNotes"; Backup.AppTitle = "Kinetik Notes";
             if (!Demo) Backup.OfferRestore();
-            Application.Run(new NotesForm(si < 0 ? null : si + 1 < args.Length ? args[si + 1] : "General"));
+            var app = new NotesForm(si < 0 ? null : si + 1 < args.Length ? args[si + 1] : "General");
+            using (new KinetikSuite.Shutdown("KinetikNotes" + (Demo ? "Demo" : ""), () => { app.Shutdown(); Application.Exit(); }))
+                Application.Run(app);
         }
         if (!Demo) Backup.AfterExit();
     }
@@ -171,12 +173,12 @@ class Settings
                             else if (f.FieldType == typeof(int)) f.SetValue(s, Convert.ToInt32(v));
                             else f.SetValue(s, Convert.ToInt32(v) != 0);
                         }
-                        catch { }
+                        catch { ok = false; }
                     }
         }
         catch { ok = false; }
         s.Sanitize();
-        return s;
+        KinetikSuite.SettingsValidation.Sanitize(s); return s;
     }
 
     public void Sanitize()
@@ -192,7 +194,9 @@ class Settings
 
     public void Save()
     {
-        if (Program.Demo || Unreadable) return; // never save defaults over settings that couldn't be read
+        if (Program.Demo || Unreadable) return;
+        KinetikSuite.SettingsValidation.Sanitize(this);
+        if (KinetikSuite.RegistryFiles.CannotSave) return; // never save defaults over settings that couldn't be read
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -656,7 +660,7 @@ class NoteLine
 
 class Note
 {
-    public string Path, Key, Title;
+    public string Path, Key, Title, Revision;
     public int Colour = -1; // index into Notes.ColourNames, -1 = not set in the file
     public bool Pinned;
     public int Tasks, DoneTasks;
@@ -703,10 +707,29 @@ static class Notes
     static readonly Regex HeadingRx = new Regex(@"^#{1,6}\s");
     static readonly Regex TagRx = new Regex(@"(?<![\w&/])#([A-Za-z][\w/-]*)");
 
+    sealed class CachedNote { public long Stamp, Length; public Note Value; }
+    static readonly object cacheGate = new object();
+    static readonly Dictionary<string, CachedNote> cache = new Dictionary<string, CachedNote>(StringComparer.OrdinalIgnoreCase);
+    static DateTime verifiedAt;
+    public static void Invalidate(string path) { lock (cacheGate) { if (path == null) cache.Clear(); else cache.Remove(path); } }
+    static Note ReadCached(string path)
+    {
+        var info = new FileInfo(path);
+        lock (cacheGate)
+        {
+            CachedNote entry;
+            if (cache.TryGetValue(path, out entry) && entry.Stamp == info.LastWriteTimeUtc.Ticks && entry.Length == info.Length) return entry.Value;
+        }
+        var note = Read(path);
+        lock (cacheGate) cache[path] = new CachedNote { Stamp = info.LastWriteTimeUtc.Ticks, Length = info.Length, Value = note };
+        return note;
+    }
+
     public static List<Note> Load(string folder, bool subfolders)
     {
         var list = new List<Note>();
-        var files = Directory.GetFiles(folder, "*.md", subfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+        lock (cacheGate) if ((DateTime.UtcNow - verifiedAt).TotalSeconds >= 60) { cache.Clear(); verifiedAt = DateTime.UtcNow; }
+        var files = KinetikSuite.Markdown.Files(folder, subfolders)
             .Where(p => !p.Contains("\\.obsidian\\") && !p.Contains("\\.trash\\"))
             .Where(p => !p.StartsWith(TemplatesDir(folder) + "\\", StringComparison.OrdinalIgnoreCase)) // templates aren't notes
             .OrderBy(p => p, StringComparer.OrdinalIgnoreCase);
@@ -716,7 +739,7 @@ static class Notes
             try
             {
                 if (new FileInfo(path).Length > 256 * 1024) continue;
-                var n = Read(path);
+                var n = ReadCached(path);
                 n.Key = path.Substring(folder.TrimEnd('\\').Length).TrimStart('\\').ToLowerInvariant();
                 if (n.Colour < 0) n.Colour = -2 - (i % ColourNames.Length); // -2… = picked by position, kept apart from "set in the file"
                 i++;
@@ -742,9 +765,11 @@ static class Notes
     static Note Read(string path)
     {
         var n = new Note { Path = path, Title = Path.GetFileNameWithoutExtension(path), Modified = File.GetLastWriteTime(path) };
-        var lines = ReadLines(path);
+        var document = KinetikSuite.TextDocument.Read(path);
+        n.Revision = document.Revision;
+        var lines = document.Text.Split('\n');
         int i = 0;
-        bool titled = false, inCode = false, inTags = false;
+        bool titled = false, inCode = false, inTags = false; char fence = '\0'; int fenceLength = 0;
         if (lines.Length > 0 && lines[0].Trim() == "---")
         {
             for (i = 1; i < lines.Length && lines[i].Trim() != "---"; i++)
@@ -768,7 +793,7 @@ static class Notes
         {
             var raw = lines[i].TrimEnd('\r');
             var t = raw.TrimStart();
-            if (t.StartsWith("```")) { inCode = !inCode; continue; }
+            if (KinetikSuite.Markdown.Fence(t, ref fence, ref fenceLength)) { inCode = fence != '\0'; continue; }
             if (t == "")
             {
                 if (n.Lines.Count > 0 && n.Lines[n.Lines.Count - 1].Kind != 4) n.Lines.Add(new NoteLine { Kind = 4 });
@@ -808,54 +833,40 @@ static class Notes
     }
 
     // ---- writing: every change keeps the file's encoding (BOM or not) and line endings
-    static string[] ReadForEdit(string path, out bool bom)
-    {
-        var bytes = File.ReadAllBytes(path);
-        bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-        return new UTF8Encoding(false).GetString(bytes, bom ? 3 : 0, bytes.Length - (bom ? 3 : 0)).Split('\n');
-    }
-
-    static void WriteEdited(string path, IEnumerable<string> lines, bool bom)
-    {
-        var body = new UTF8Encoding(false).GetBytes(string.Join("\n", lines));
-        using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
-        {
-            if (bom) fs.Write(new byte[] { 0xEF, 0xBB, 0xBF }, 0, 3);
-            fs.Write(body, 0, body.Length);
-        }
-    }
-
-    // Ticks or unticks the task on one line of the file.
-    public static bool Toggle(string path, int line)
+    public static bool Toggle(string path, int line, string revision)
     {
         try
         {
-            bool bom;
-            var lines = ReadForEdit(path, out bom);
-            if (line < 0 || line >= lines.Length) return false;
-            var m = TaskLineRx.Match(lines[line]);
-            if (!m.Success) return false; // the file changed since it was read
-            lines[line] = m.Groups[1].Value + (m.Groups[2].Value == " " ? "x" : " ") + m.Groups[3].Value;
-            WriteEdited(path, lines, bom);
+            if (string.IsNullOrEmpty(revision)) throw new IOException("Refresh the note before editing it.");
+            KinetikSuite.SafeEdit.Update(path, revision, doc =>
+            {
+                var lines = doc.Text.Split('\n');
+                if (line < 0 || line >= lines.Length) throw new IOException("The task moved. Refresh the note.");
+                var m = TaskLineRx.Match(lines[line]);
+                if (!m.Success) throw new IOException("The task changed. Refresh the note.");
+                lines[line] = m.Groups[1].Value + (m.Groups[2].Value == " " ? "x" : " ") + m.Groups[3].Value;
+                return string.Join("\n", lines);
+            });
             return true;
         }
-        catch { return false; }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Kinetik Notes", MessageBoxButtons.OK, MessageBoxIcon.Information); return false; }
     }
 
     // Sets (or, with null, removes) one key in the note's front matter, adding the front matter if it has none.
-    public static bool SetMeta(string path, string key, string value)
+    public static bool SetMeta(string path, string revision, string key, string value)
     {
         try
         {
-            bool bom;
-            var lines = ReadForEdit(path, out bom).ToList();
+            KinetikSuite.SafeEdit.Update(path, revision, doc =>
+            {
+            var lines = doc.Text.Split('\n').ToList();
             string cr = lines.Count > 0 && lines[0].EndsWith("\r") ? "\r" : "";
             int end = -1;
             if (lines.Count > 0 && lines[0].Trim() == "---")
                 for (int i = 1; i < lines.Count; i++) if (lines[i].Trim() == "---") { end = i; break; }
             if (end < 0)
             {
-                if (value == null) return true;
+                if (value == null) return doc.Text;
                 lines.InsertRange(0, new[] { "---" + cr, key + ": " + value + cr, "---" + cr });
             }
             else
@@ -871,10 +882,11 @@ static class Notes
                 // an empty front matter block is just clutter
                 if (lines.Count > 1 && lines[0].Trim() == "---" && lines[1].Trim() == "---") { lines.RemoveRange(0, 2); if (lines.Count > 0 && lines[0].Trim() == "") lines.RemoveAt(0); }
             }
-            WriteEdited(path, lines, bom);
+            return string.Join("\n", lines);
+            });
             return true;
         }
-        catch { return false; }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Kinetik Notes", MessageBoxButtons.OK, MessageBoxIcon.Information); return false; }
     }
 
     // Opens a note in Obsidian when it's inside a vault, otherwise in the default Markdown editor.
@@ -998,11 +1010,12 @@ class NotesForm : Form
     static readonly Color KeyColour = Color.FromArgb(1, 1, 2); // see-through between the notes
     readonly Settings c = Settings.Load();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly ContextMenuStrip menu = new ContextMenuStrip();
+    readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     readonly System.Windows.Forms.Timer reload = new System.Windows.Forms.Timer { Interval = 400 };
     readonly System.Windows.Forms.Timer midnight = new System.Windows.Forms.Timer { Interval = 60000 };
     List<Card> cards = new List<Card>();
     FileSystemWatcher watcher;
+    bool loadingNotes, loadAgain;
     List<Note> all = new List<Note>(), notes = new List<Note>();
     string message, watchedFolder, watchedMode;
     Font fTitle, fText, fHead, fSmall, fDone;
@@ -1036,12 +1049,15 @@ class NotesForm : Form
         tray.MouseDown += (s, e) => menuNote = null;
         tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) SetHidden(!hidden); };
         reload.Tick += (s, e) => { reload.Stop(); LoadNotes(); };
-        midnight.Tick += (s, e) => { if (DateTime.Today != today) { today = DateTime.Today; Relayout(); } }; // due badges change at midnight
+        midnight.Tick += (s, e) => { today = DateTime.Today; LoadNotes(); }; // due badges change at midnight
         midnight.Start();
         Restyle();
-        LoadNotes();
+        Load += (s, e) => LoadNotes();
         if (c.Folder == "" || openSettings != null) Load += (s, e) => BeginInvoke((Action)(() => OpenSettings(openSettings ?? "General")));
     }
+
+    public void Shutdown()
+    { if (settings != null && !settings.IsDisposed) settings.Close(); c.Save(); Close(); }
 
     protected override CreateParams CreateParams
     {
@@ -1167,18 +1183,18 @@ class NotesForm : Form
             for (int i = 0; i < Notes.ColourNames.Length; i++)
             {
                 int ci = i;
-                var it = Item(CultureInfo.CurrentCulture.TextInfo.ToTitleCase(Notes.ColourNames[i]), n.Colour == i, () => Notes.SetMeta(n.Path, "color", Notes.ColourNames[ci]));
+                var it = Item(CultureInfo.CurrentCulture.TextInfo.ToTitleCase(Notes.ColourNames[i]), n.Colour == i, () => Notes.SetMeta(n.Path, n.Revision, "color", Notes.ColourNames[ci]));
                 it.Image = SwatchImage(Notes.Swatch(i));
                 colour.DropDownItems.Add(it);
             }
             colour.DropDownItems.Add(new ToolStripSeparator());
-            colour.DropDownItems.Add(Item("Default", n.Colour < 0, () => Notes.SetMeta(n.Path, "color", null)));
+            colour.DropDownItems.Add(Item("Default", n.Colour < 0, () => Notes.SetMeta(n.Path, n.Revision, "color", null)));
             menu.Items.Add(colour);
-            menu.Items.Add(Item("Pinned", n.Pinned, () => Notes.SetMeta(n.Path, "pinned", n.Pinned ? null : "true")));
+            menu.Items.Add(Item("Pinned", n.Pinned, () => Notes.SetMeta(n.Path, n.Revision, "pinned", n.Pinned ? null : "true")));
             bool rolled = Settings.InList(c.Collapsed, n.Key);
             menu.Items.Add(Item("Rolled up", rolled, () => { c.Collapsed = Settings.WithKey(c.Collapsed, n.Key, !rolled); Changed(); }));
             var due = new ToolStripMenuItem("Due date");
-            Action<DateTime?> setDue = d => Notes.SetMeta(n.Path, "due", d == null ? null : d.Value.ToString("yyyy-MM-dd"));
+            Action<DateTime?> setDue = d => Notes.SetMeta(n.Path, n.Revision, "due", d == null ? null : d.Value.ToString("yyyy-MM-dd"));
             due.DropDownItems.Add(Item("Today", n.Due == today, () => setDue(today)));
             due.DropDownItems.Add(Item("Tomorrow", n.Due == today.AddDays(1), () => setDue(today.AddDays(1))));
             due.DropDownItems.Add(Item("In a week", n.Due == today.AddDays(7), () => setDue(today.AddDays(7))));
@@ -1308,9 +1324,10 @@ class NotesForm : Form
         try
         {
             watcher = new FileSystemWatcher(c.Folder, "*.md") { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size, IncludeSubdirectories = c.Subfolders };
-            FileSystemEventHandler h = (s, e) => { try { BeginInvoke((Action)(() => { reload.Stop(); reload.Start(); })); } catch { } };
+            FileSystemEventHandler h = (s, e) => { Notes.Invalidate(e.FullPath); try { BeginInvoke((Action)(() => { reload.Stop(); reload.Start(); })); } catch { } };
             watcher.Changed += h; watcher.Created += h; watcher.Deleted += h;
-            watcher.Renamed += (s, e) => h(s, e);
+            watcher.Renamed += (s, e) => { Notes.Invalidate(e.OldFullPath); h(s, e); };
+            watcher.Error += (s, e) => { Notes.Invalidate(null); try { BeginInvoke((Action)(() => { watchedMode = null; reload.Stop(); reload.Start(); })); } catch { } };
             watcher.EnableRaisingEvents = true;
         }
         catch { watcher = null; }
@@ -1319,12 +1336,28 @@ class NotesForm : Form
     void LoadNotes()
     {
         Watch();
-        message = null;
-        all = new List<Note>();
-        if (string.IsNullOrWhiteSpace(c.Folder)) message = "Right-click here → Settings… to pick a folder of Markdown notes.";
-        else if (!Directory.Exists(c.Folder)) message = "Can't find the notes folder:\n" + c.Folder;
-        else try { all = Notes.Load(c.Folder, c.Subfolders); } catch (Exception ex) { message = ex.Message; }
+        if (loadingNotes) { loadAgain = true; return; }
+        loadingNotes = true;
+        var folder = c.Folder; bool sub = c.Subfolders;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string error = null; var loaded = new List<Note>();
+            if (string.IsNullOrWhiteSpace(folder)) error = "Right-click here → Settings… to pick a folder of Markdown notes.";
+            else if (!Directory.Exists(folder)) error = "Can't find the notes folder:\n" + folder;
+            else try { loaded = Notes.Load(folder, sub); } catch (Exception ex) { error = ex.Message; }
+            try { BeginInvoke((Action)(() =>
+            {
+                loadingNotes = false;
+                if (IsDisposed) return;
+                if (!loadAgain && folder == c.Folder && sub == c.Subfolders) ApplyNotes(loaded, error);
+                else { loadAgain = false; LoadNotes(); }
+            })); } catch { }
+        });
+    }
 
+    void ApplyNotes(List<Note> loaded, string error)
+    {
+        all = loaded; message = error;
         var tags = (c.TagFilter ?? "").Split(',', ' ').Select(t => t.Trim().TrimStart('#')).Where(t => t != "").ToList();
         IEnumerable<Note> q = all.Where(n => !Settings.InList(c.Hidden, n.Key));
         if (c.HideFinishedNotes) q = q.Where(n => n.Tasks == 0 || n.DoneTasks < n.Tasks);
@@ -1779,7 +1812,8 @@ class NotesForm : Form
                 else if (task != null)
                 {
                     var l = task.Value.Key;
-                    if (Notes.Toggle(cd.N.Path, l.Src)) { l.Done = !l.Done; cd.N.DoneTasks += l.Done ? 1 : -1; Relayout(); }
+                    Notes.Toggle(cd.N.Path, l.Src, cd.N.Revision);
+                    Notes.Invalidate(cd.N.Path); LoadNotes();
                 }
             }
         }
@@ -2176,22 +2210,8 @@ static class Backup
         }
     }
 
-    static bool Reg(string args)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "reg.exe"), args)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            using (var p = System.Diagnostics.Process.Start(psi))
-            {
-                p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
-                return p.WaitForExit(15000) && p.ExitCode == 0;
-            }
-        }
-        catch { return false; }
-    }
+    static bool Reg(string args) { return KinetikSuite.RegistryFiles.Run(args); }
 
-    // A restore may only write this app's own key, so an edited or swapped file can't change anything else.
     static bool FileIsOurs()
     {
         try
@@ -2210,7 +2230,11 @@ static class Backup
         catch { return false; }
     }
 
-    static bool Import() { return FileIsOurs() && Reg("import \"" + FilePath + "\""); }
+    static bool Import()
+    {
+        try { return FileIsOurs() && KinetikSuite.RegistryFiles.Replace(FilePath, new[] { KeyName }); }
+        catch (Exception ex) { Say(ex.Message, MessageBoxIcon.Warning); return false; }
+    }
 
     static void Say(string text, MessageBoxIcon icon) { MessageBox.Show(text, AppTitle, MessageBoxButtons.OK, icon); }
 
