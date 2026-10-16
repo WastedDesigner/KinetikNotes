@@ -24,11 +24,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Notes")]
 [assembly: AssemblyProduct("Kinetik Notes")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.6.4.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
 
 static class Program
 {
-    public const string Version = "1.6.4";
+    public const string Version = "1.7.0";
     // --demo: made-up notes in a temporary folder, no settings read from or saved to this PC.
     // "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
@@ -260,6 +260,24 @@ class Theme
 
     static Color C(int r, int g, int b) { return Color.FromArgb(r, g, b); }
 
+    // The terminal themes (the same green, amber and yellow as Kinetik's dashboard and Kinetik Screen) draw in a
+    // monospace font unless a font is picked, and their divider lines glow in the theme's colour.
+    public bool Term { get { return IsTerm(Name); } }
+    public static bool IsTerm(string name) { return name == "Terminal" || name == "Amber terminal" || name == "Yellow terminal"; }
+    static string mono;
+    public static string Mono
+    {
+        get
+        {
+            if (mono == null)
+            {
+                mono = "Consolas";
+                try { using (var f = new Font("Cascadia Mono", 10f)) if (f.Name == "Cascadia Mono") mono = "Cascadia Mono"; } catch { }
+            }
+            return mono;
+        }
+    }
+
     public static readonly Theme[] All =
     {
         new Theme("Midnight", C(22, 22, 26), C(242, 242, 246), C(168, 168, 180), C(240, 88, 88), false),
@@ -272,6 +290,9 @@ class Theme
         new Theme("Ocean", C(12, 29, 45), C(228, 242, 250), C(128, 160, 186), C(56, 198, 232), false),
         new Theme("Sunset", C(40, 23, 35), C(250, 236, 240), C(192, 150, 172), C(255, 138, 92), false),
         new Theme("Mono", C(10, 10, 10), C(245, 245, 245), C(140, 140, 140), C(245, 245, 245), false),
+        new Theme("Terminal", C(3, 10, 5), C(90, 255, 120), C(46, 170, 80), C(205, 255, 215), false),
+        new Theme("Amber terminal", C(12, 7, 0), C(255, 182, 40), C(185, 118, 22), C(255, 232, 180), false),
+        new Theme("Yellow terminal", C(0, 0, 0), C(255, 226, 0), C(200, 178, 0), C(255, 255, 190), false),
         new Theme("Light", C(246, 246, 248), C(24, 24, 28), C(96, 96, 106), C(230, 70, 70), true),
         new Theme("Paper", C(250, 246, 236), C(52, 42, 32), C(132, 116, 96), C(204, 92, 52), true),
         new Theme("Frost", C(236, 242, 250), C(20, 30, 48), C(92, 106, 132), C(40, 120, 230), true),
@@ -1122,7 +1143,7 @@ class NotesForm : Form
         u = DeviceDpi / 96f * c.Scale / 100f;
         DisposeFonts();
         Emoji.Clear();
-        var fam = c.FontName != "" && Draw.Families.Contains(c.FontName) ? c.FontName : Draw.DefaultFamily;
+        var fam = c.FontName != "" && Draw.Families.Contains(c.FontName) ? c.FontName : Theme.IsTerm(c.ThemeName) ? Theme.Mono : Draw.DefaultFamily;
         fTitle = new Font(fam, 14f * u, FontStyle.Bold, GraphicsUnit.Pixel);
         fHead = new Font(fam, 12.5f * u, FontStyle.Bold, GraphicsUnit.Pixel);
         fText = new Font(fam, 12.5f * u, FontStyle.Regular, GraphicsUnit.Pixel);
