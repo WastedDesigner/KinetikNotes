@@ -636,7 +636,9 @@ static class Draw
 
 class DarkColors : ProfessionalColorTable
 {
-    static readonly Color Bg = Color.FromArgb(27, 31, 44), Hi = Color.FromArgb(40, 47, 66), Edge = Color.FromArgb(52, 60, 82);
+    static Color Bg { get { return KinetikSuite.Look.Current.Card; } }
+    static Color Hi { get { return KinetikSuite.Look.Current.Hover; } }
+    static Color Edge { get { return KinetikSuite.Look.Current.Border; } }
     public override Color ToolStripDropDownBackground { get { return Bg; } }
     public override Color ImageMarginGradientBegin { get { return Bg; } }
     public override Color ImageMarginGradientMiddle { get { return Bg; } }
@@ -650,9 +652,9 @@ class DarkColors : ProfessionalColorTable
     public override Color MenuItemPressedGradientEnd { get { return Hi; } }
     public override Color SeparatorDark { get { return Edge; } }
     public override Color SeparatorLight { get { return Edge; } }
-    public override Color CheckBackground { get { return Color.FromArgb(52, 96, 160); } }
-    public override Color CheckSelectedBackground { get { return Color.FromArgb(62, 110, 180); } }
-    public override Color CheckPressedBackground { get { return Color.FromArgb(62, 110, 180); } }
+    public override Color CheckBackground { get { return KinetikSuite.Look.Current.Hover; } }
+    public override Color CheckSelectedBackground { get { return KinetikSuite.Look.Current.Hover; } }
+    public override Color CheckPressedBackground { get { return KinetikSuite.Look.Current.Hover; } }
 }
 
 class DarkMenu : ToolStripProfessionalRenderer
@@ -660,12 +662,12 @@ class DarkMenu : ToolStripProfessionalRenderer
     public DarkMenu() : base(new DarkColors()) { RoundedEdges = false; }
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
-        e.TextColor = e.Item.Enabled ? Color.FromArgb(232, 236, 244) : Color.FromArgb(110, 118, 140);
+        e.TextColor = e.Item.Enabled ? KinetikSuite.Look.Current.Text : KinetikSuite.Look.Current.Sub;
         base.OnRenderItemText(e);
     }
     protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
     {
-        e.ArrowColor = Color.FromArgb(180, 188, 205);
+        e.ArrowColor = KinetikSuite.Look.Current.Sub;
         base.OnRenderArrow(e);
     }
 }
@@ -1871,8 +1873,19 @@ class SettingsForm : Form
 {
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
 
-    static readonly Color Bg = Color.FromArgb(20, 23, 32), NavBg = Color.FromArgb(27, 31, 44), CardBg = Color.FromArgb(34, 39, 54),
-        Field = Color.FromArgb(44, 51, 70), Text1 = Color.FromArgb(232, 236, 244), Sub = Color.FromArgb(150, 158, 178), Accent = Color.FromArgb(90, 160, 255);
+    static Color Bg { get { return KinetikSuite.Look.Current.Bg; } }
+
+    static Color NavBg { get { return KinetikSuite.Look.Current.Nav; } }
+
+    static Color CardBg { get { return KinetikSuite.Look.Current.Card; } }
+
+    static Color Field { get { return KinetikSuite.Look.Current.Field; } }
+
+    static Color Text1 { get { return KinetikSuite.Look.Current.Text; } }
+
+    static Color Sub { get { return KinetikSuite.Look.Current.Sub; } }
+
+    static Color Accent { get { return KinetikSuite.Look.Current.Accent; } }
     static readonly string[] Pages = { "General", "Appearance", "Notes", "Placement", "About" };
 
     readonly NotesForm owner;
@@ -1915,7 +1928,7 @@ class SettingsForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        try { int one = 1; DwmSetWindowAttribute(Handle, 20, ref one, 4); } catch { } // dark title bar
+        KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
     }
 
     Label NavItem(string name)
@@ -1989,22 +2002,14 @@ class SettingsForm : Form
 
     void Check(string title, string desc, bool value, Action<bool> set)
     {
-        var cb = new CheckBox { Checked = value, AutoSize = false, Size = new Size(S(18), S(18)), BackColor = CardBg, Text = "" };
-        cb.CheckedChanged += (s, e) => { set(cb.Checked); Apply(); };
-        Row(title, desc, cb);
+        var sw = new KinetikSuite.Switch(value, k);
+        sw.Changed += (s, e) => { set(sw.On); Apply(); };
+        Row(title, desc, sw);
     }
 
     void Choice(string title, string desc, string[] items, int selected, Action<int> set, int width = 200)
     {
-        var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = Text1, Width = S(width), DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = S(20) };
-        // drawn by hand so the closed box and its list stay dark
-        cb.DrawItem += (s, e) =>
-        {
-            if (e.Index < 0) return;
-            bool sel = (e.State & DrawItemState.Selected) != 0 && (e.State & DrawItemState.ComboBoxEdit) == 0;
-            using (var b = new SolidBrush(sel ? Accent : Field)) e.Graphics.FillRectangle(b, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, cb.Items[e.Index].ToString(), cb.Font, e.Bounds, sel ? Bg : Text1, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
-        };
+        var cb = new KinetikSuite.Dropdown { Width = S(width), ItemHeight = S(22) };
         cb.Items.AddRange(items);
         cb.SelectedIndex = Math.Max(0, Math.Min(items.Length - 1, selected));
         cb.SelectedIndexChanged += (s, e) => { set(cb.SelectedIndex); Apply(); };
@@ -2047,12 +2052,10 @@ class SettingsForm : Form
         return tb;
     }
 
-    Button Btn(string text, EventHandler click, bool accent = false)
+    KinetikSuite.FlatButton Btn(string text, EventHandler click, bool accent = false)
     {
-        var b = new Button { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, BackColor = accent ? Accent : Field, ForeColor = accent ? Bg : Text1, Padding = new Padding(S(8), S(2), S(8), S(2)) };
-        b.FlatAppearance.BorderColor = accent ? Accent : Color.FromArgb(60, 68, 92);
+        var b = new KinetikSuite.FlatButton(text, accent, k) { Font = Font };
         b.Click += click;
-        b.Size = b.PreferredSize; // so rows can right-align it before it's laid out
         return b;
     }
 
@@ -2312,6 +2315,7 @@ class CommonMenu
 
     public string Title, Version;
     public Action OpenTheme;                                        // opens the theme picker (or the page with it)
+    public Action LookChanged;                                      // optional: after the App theme changes
     public Func<int> Scale; public Action<int> SetScale;
     public int[] Widths; public Func<int> CardWidth; public Action<int> SetCardWidth; // optional: Narrow, Normal, Wide
     public Func<string> FontName; public Action<string> SetFontName;   // optional; "" = the default font
@@ -2341,7 +2345,8 @@ class CommonMenu
     // Appearance and placement: Theme, Size, Font, Background opacity, Placement.
     public void AddLook(ToolStripItemCollection items)
     {
-        if (OpenTheme != null) items.Add(Item("Theme…", false, OpenTheme));
+        if (OpenTheme != null) items.Add(Item("Widget theme…", false, OpenTheme));
+        items.Add(KinetikSuite.Look.MenuItem(LookChanged)); // the theme of every Kinetik app's windows and menus
 
         var size = new ToolStripMenuItem("Size");
         foreach (var s in Scales) { int v = s; size.DropDownItems.Add(Item(v + "%", Scale() == v, () => SetScale(v))); }
