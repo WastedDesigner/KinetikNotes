@@ -290,6 +290,8 @@ class Theme
         new Theme("Ocean", C(12, 29, 45), C(228, 242, 250), C(128, 160, 186), C(56, 198, 232), false),
         new Theme("Sunset", C(40, 23, 35), C(250, 236, 240), C(192, 150, 172), C(255, 138, 92), false),
         new Theme("Mono", C(10, 10, 10), C(245, 245, 245), C(140, 140, 140), C(245, 245, 245), false),
+        new Theme("OLED black", C(0, 0, 0), C(242, 242, 245), C(136, 136, 146), C(76, 194, 255), false),
+        new Theme("Mocha", C(30, 30, 46), C(205, 214, 244), C(147, 153, 178), C(203, 166, 247), false),
         new Theme("Terminal", C(3, 10, 5), C(90, 255, 120), C(46, 170, 80), C(205, 255, 215), false),
         new Theme("Amber terminal", C(12, 7, 0), C(255, 182, 40), C(185, 118, 22), C(255, 232, 180), false),
         new Theme("Yellow terminal", C(0, 0, 0), C(255, 226, 0), C(200, 178, 0), C(255, 255, 190), false),
@@ -300,6 +302,8 @@ class Theme
 
     public static Theme Get(string name)
     {
+        // "App" follows the theme and accent colour every Kinetik app shares.
+        if (name == "App") { var l = KinetikSuite.Look.Current; return new Theme("App", l.Card, l.Text, l.Sub, l.Accent, l.Light); }
         if (name == "Auto")
         {
             bool light = false;
@@ -368,7 +372,7 @@ class ThemeTile : Control
         }
         else Mini(g, inner, ThemeName);
         using (var f = new Font("Segoe UI", 9f))
-            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName, f, new Rectangle(0, Height - I(27), Width, I(20)), selected ? Color.FromArgb(232, 236, 244) : Color.FromArgb(150, 158, 178),
+            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName == "App" ? "Match app theme" : ThemeName, f, new Rectangle(0, Height - I(27), Width, I(20)), selected ? Color.FromArgb(232, 236, 244) : Color.FromArgb(150, 158, 178),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
@@ -699,7 +703,7 @@ static class Notes
     // The two paper looks colour the whole note; every other theme (the same set as Kinetik's other widgets)
     // uses its own background and text, and tints the title band with the note's colour.
     public static readonly string[] PaperThemes = { "Pastel paper", "Vivid paper" };
-    public static IEnumerable<string> ThemeNames { get { return PaperThemes.Concat(new[] { "Auto" }).Concat(Theme.All.Select(t => t.Name)); } }
+    public static IEnumerable<string> ThemeNames { get { return PaperThemes.Concat(new[] { "Auto", "App" }).Concat(Theme.All.Select(t => t.Name)); } }
     static readonly Color[] pastel = { Color.FromArgb(255, 241, 150), Color.FromArgb(255, 207, 150), Color.FromArgb(255, 190, 210), Color.FromArgb(218, 200, 255), Color.FromArgb(185, 224, 255), Color.FromArgb(196, 240, 188) };
     static readonly Color[] vivid = { Color.FromArgb(255, 214, 10), Color.FromArgb(255, 149, 0), Color.FromArgb(255, 105, 150), Color.FromArgb(170, 128, 255), Color.FromArgb(64, 168, 255), Color.FromArgb(70, 200, 110) };
     static readonly Color[] deep = { Color.FromArgb(200, 150, 0), Color.FromArgb(220, 110, 20), Color.FromArgb(215, 60, 120), Color.FromArgb(130, 80, 220), Color.FromArgb(30, 120, 220), Color.FromArgb(40, 150, 80) };
@@ -1887,6 +1891,7 @@ class SettingsForm : Form
 
     static Color Accent { get { return KinetikSuite.Look.Current.Accent; } }
     static readonly string[] Pages = { "General", "Appearance", "Notes", "Placement", "About" };
+    static readonly string[] Subtitles = { "Where your notes live, and how new ones start.", "How the notes look on your desktop.", "Which notes show, and in what order.", "Where the notes sit, and how they behave.", "Version, updates and licence." };
 
     readonly NotesForm owner;
     readonly Settings c;
@@ -1921,6 +1926,8 @@ class SettingsForm : Form
         var navList = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(S(8), 0, S(8), 0), BackColor = NavBg };
         foreach (var p in Pages) navList.Controls.Add(NavItem(p));
         nav.Controls.Add(navList); nav.Controls.Add(brand);
+        nav.Padding = new Padding(0, 0, 1, 0);
+        nav.Paint += (s, e) => { using (var pen = new Pen(KinetikSuite.Look.Current.Border, 1)) e.Graphics.DrawLine(pen, nav.Width - 1, 0, nav.Width - 1, nav.Height); };
         Controls.Add(content); Controls.Add(nav);
         ShowPage(page ?? "General");
     }
@@ -1957,12 +1964,17 @@ class SettingsForm : Form
         noteList = null;
         list = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(S(18), S(8), S(18), S(18)), BackColor = Bg };
         content.Controls.Add(list);
+        KinetikSuite.Look.Current.ScrollBars(list);
+        // The page's title and what it's for, as in Kinetik's settings.
+        list.Controls.Add(new Label { Text = name, Font = new Font("Segoe UI", 17f, FontStyle.Bold), ForeColor = Text1, AutoSize = true, Margin = new Padding(S(2), S(10), 0, 0) });
+        list.Controls.Add(new Label { Text = Subtitles[Array.IndexOf(Pages, name)], ForeColor = Sub, AutoSize = true, Margin = new Padding(S(3), S(2), 0, S(4)) });
         if (name == "General") BuildGeneral();
         else if (name == "Appearance") BuildAppearance();
         else if (name == "Notes") BuildNotes();
         else if (name == "Placement") BuildPlacement();
         else BuildAbout();
         content.ResumeLayout();
+        ActiveControl = null; // no text box selected and highlighted until it's clicked
     }
 
     public void RefreshPage()
@@ -1980,7 +1992,7 @@ class SettingsForm : Form
     // ---- page building helpers
     void Header(string text)
     {
-        list.Controls.Add(new Label { Text = text, Font = new Font("Segoe UI", 10f, FontStyle.Bold), ForeColor = Sub, AutoSize = false, Size = new Size(RowW, S(34)), TextAlign = ContentAlignment.BottomLeft, Margin = new Padding(S(2), S(8), 0, S(6)) });
+        list.Controls.Add(new Label { Text = text.ToUpperInvariant(), Font = new Font("Segoe UI", 8f, FontStyle.Bold), ForeColor = Sub, AutoSize = false, Size = new Size(RowW, S(32)), TextAlign = ContentAlignment.BottomLeft, Margin = new Padding(S(4), S(10), 0, S(8)) });
     }
 
     void Hint(string text, int lines = 2)
@@ -1990,8 +2002,7 @@ class SettingsForm : Form
 
     void Row(string title, string desc, Control right)
     {
-        var p = new Panel { Size = new Size(RowW, S(desc == null ? 46 : 60)), BackColor = CardBg, Margin = new Padding(0, 0, 0, S(4)) };
-        p.Paint += (s, e) => { };
+        var p = new KinetikSuite.CardRow(k) { Size = new Size(RowW, S(desc == null ? 50 : 60)) };
         var t = new Label { Text = title, ForeColor = Text1, AutoSize = true, Location = new Point(S(14), desc == null ? (p.Height - S(18)) / 2 : S(10)), BackColor = CardBg };
         p.Controls.Add(t);
         if (desc != null) p.Controls.Add(new Label { Text = desc, ForeColor = Sub, AutoSize = false, Size = new Size(RowW - S(30) - right.Width, S(20)), Location = new Point(S(14), S(31)), Font = new Font("Segoe UI", 8.5f), BackColor = CardBg, AutoEllipsis = true });
