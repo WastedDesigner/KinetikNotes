@@ -2122,7 +2122,7 @@ class SettingsForm : Form
     void BuildAppearance()
     {
         Header("Theme");
-        Hint("The paper themes colour the whole note. The others match Kinetik's widgets and tint each note's title with its colour.", 2);
+        Hint("The paper themes colour the whole note. The others match Kinetik Stats' widgets and tint each note's title with its colour.", 2);
         var tiles = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MaximumSize = new Size(RowW + S(8), 0), WrapContents = true, BackColor = Bg, Margin = new Padding(0, 0, 0, S(4)) };
         foreach (var name in Notes.ThemeNames)
         {
