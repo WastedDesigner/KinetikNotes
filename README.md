@@ -6,13 +6,24 @@
 
 **Kinetik Notes** is a free, open-source **sticky notes widget for Windows 11 and Windows 10** that shows a folder of Markdown files on your desktop, one note per file. Point it at an Obsidian folder (a to-do list, a project folder) and the notes follow it live: edit a file anywhere and the note updates; tick a task on the note and the file changes.
 
-It's a small portable app with no installer and no account. It's a companion to [Kinetik](https://github.com/WastedDesigner/Kinetik), the taskbar system monitor, and [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), and shares their look.
+It's a small portable app with no installer and no account. It's a companion to [Kinetik Stats](https://github.com/WastedDesigner/Kinetik), the taskbar system monitor, and [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), and shares their look.
 
 ![Kinetik Notes in the Pastel paper theme: six notes in three columns with tasks, progress bars, a due date and tags](screenshots/notes.png)
 
 ![The same notes in the Navy theme](screenshots/notes-navy.png)
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please [open an issue](../../issues).
+
+## What's new in 2.0
+
+Part of the Kinetik apps, with [Kinetik Stats](https://github.com/WastedDesigner/Kinetik) (the taskbar monitor, called just Kinetik until its v4.0), [Kinetik Hub](https://github.com/WastedDesigner/KinetikHub) and the other desktop widgets.
+
+- **Settings in Kinetik Stats' layout:** a title on each page, rows that join into cards, and switches, drop-downs and buttons in the app theme instead of Windows' own.
+- **App theme:** one theme and accent colour for every Kinetik app's windows and menus: Match Windows, Graphite, OLED black, Midnight, Nord, Mocha, Forest, Light or Paper, with a Sky, Violet, Mint, Amber, Rose or Coral accent or your Windows accent. Pick it in Settings → General, under **App theme** in the right-click menu, in Kinetik Hub or in Kinetik Stats, and every app follows.
+- **Widget themes:** new **OLED black** and **Mocha**, and **Match app theme**, which uses the app theme and accent colour.
+- **New icon** in the Kinetik apps' "Graphite glass" style.
+
+<img src="screenshots/settings.png" alt="Kinetik Notes' settings" width="600">
 
 ## Features
 
