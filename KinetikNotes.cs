@@ -48,7 +48,7 @@ static class Program
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            ToolStripManager.Renderer = new DarkMenu();
+            ToolStripManager.Renderer = KinetikSuite.Look.Current.MenuRenderer();
             // "--settings Page" opens the settings window on that page when it starts
             int si = Array.IndexOf(args, "--settings");
             Backup.KeyName = "KinetikNotes"; Backup.AppTitle = "Kinetik Notes";
