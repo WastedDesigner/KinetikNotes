@@ -24,11 +24,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Notes")]
 [assembly: AssemblyProduct("Kinetik Notes")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.0.1.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
 
 static class Program
 {
-    public const string Version = "2.0.1";
+    public const string Version = "2.1.0";
     // --demo: made-up notes in a temporary folder, no settings read from or saved to this PC.
     // "--theme Name" picks its theme (for screenshots).
     public static bool Demo;
@@ -117,8 +117,9 @@ class Settings
     public string Folder = "", TagFilter = "", Hidden = "", Collapsed = ""; // Hidden/Collapsed: note keys joined by '|'
     // Behaviour
     public int DoubleClick = 0;    // 0 open in Obsidian, 1 open in the default editor, 2 show in File Explorer
-    public bool Hotkey = true, OpenNew = true, AskTitle = true;
+    public bool Hotkey = true, OpenNew = true, AskTitle = true, QuickCapture = true;
     public string Template = DefaultTemplate;
+    public string MirrorFolder = ""; // copy the notes into this folder as they change, see Mirror
 
     static IEnumerable<FieldInfo> Fields
     {
@@ -928,12 +929,15 @@ static class Notes
             {
                 var rel = path.Substring(dir.Length).TrimStart('\\').Replace('\\', '/');
                 if (rel.EndsWith(".md", StringComparison.OrdinalIgnoreCase)) rel = rel.Substring(0, rel.Length - 3);
-                Process.Start("obsidian://open?vault=" + Uri.EscapeDataString(Path.GetFileName(dir)) + "&file=" + Uri.EscapeDataString(rel));
+                Shell("obsidian://open?vault=" + Uri.EscapeDataString(Path.GetFileName(dir)) + "&file=" + Uri.EscapeDataString(rel));
             }
-            else Process.Start(path);
+            else Shell(path);
         }
-        catch { try { Process.Start(path); } catch { } }
+        catch { try { Shell(path); } catch { } }
     }
+
+    // .NET (unlike .NET Framework) only opens URLs and documents when UseShellExecute is set.
+    static void Shell(string target) { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
 
     // ---- templates: Markdown files in a "Templates" folder inside the notes folder, so they can be edited in Obsidian
     public const string TemplatesFolderName = "Templates";
@@ -988,13 +992,35 @@ static class Notes
     }
 
     // Makes a note from a template file (null = the blank-note template in Settings), named after its title.
-    public static string NewNote(string folder, string templatePath, string blank, string title)
+    // A file name in the folder for a note with this title: "Title.md", or "Title 2.md" when that's taken.
+    static string FreshPath(string folder, string title)
     {
         var name = new string(title.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '-' : ch).ToArray()).Trim().TrimEnd('.');
+        if (name.Length > 80) name = name.Substring(0, 80).Trim();
         if (name == "") name = "New note";
         int n = 1;
         string path;
         while (File.Exists(path = Path.Combine(folder, name + (n > 1 ? " " + n : "") + ".md"))) n++;
+        return path;
+    }
+
+    // Quick capture: the first line is the title, the rest the body. Returns the new file, or null for an empty capture.
+    public static string QuickNote(string folder, string text)
+    {
+        text = (text ?? "").Replace("\r\n", "\n").Trim('\n', ' ');
+        if (text == "") return null;
+        var lines = text.Split('\n');
+        var title = lines[0].TrimStart('#', ' ').Trim();
+        if (title == "") title = "Quick note " + DateTime.Now.ToString("yyyy-MM-dd HHmm");
+        var body = string.Join("\n", lines.Skip(1)).Trim('\n');
+        var path = FreshPath(folder, title);
+        File.WriteAllText(path, "# " + title + "\n\n" + (body != "" ? body + "\n" : ""), new UTF8Encoding(false));
+        return path;
+    }
+
+    public static string NewNote(string folder, string templatePath, string blank, string title)
+    {
+        var path = FreshPath(folder, title);
         var text = templatePath != null ? File.ReadAllText(templatePath) : (blank ?? Settings.DefaultTemplate);
         // the blank template predates {title}; give it the title if it still starts with the stock heading
         if (templatePath == null && text.StartsWith("# New note")) text = "# {title}" + text.Substring("# New note".Length);
@@ -1006,6 +1032,380 @@ static class Notes
     public static void Recycle(string path)
     {
         Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+    }
+}
+
+// ======================================================================= Search, preview, quick capture, folder mirror
+// Full-text search over the notes' files: every word has to appear somewhere (title, tags or body), ignoring case.
+static class Find
+{
+    public class Hit { public Note N; public string Snippet; }
+
+    // path → the file's text, for the notes that can be read (a note over 1 MB is searched by its title and tags only).
+    public static Dictionary<string, string> ReadAll(IEnumerable<Note> notes)
+    {
+        var texts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var n in notes)
+            try { if (new FileInfo(n.Path).Length <= 1 << 20) texts[n.Path] = File.ReadAllText(n.Path); } catch { }
+        return texts;
+    }
+
+    public static List<Hit> Search(IEnumerable<Note> notes, IDictionary<string, string> texts, string query)
+    {
+        var words = (query ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        var hits = new List<Hit>();
+        if (words.Length == 0) return hits;
+        foreach (var n in notes)
+        {
+            string body;
+            if (!texts.TryGetValue(n.Path, out body)) body = "";
+            var all = n.Title + "\n" + string.Join(" ", n.Tags.Select(t => "#" + t)) + "\n" + body;
+            if (words.Any(w => all.IndexOf(w, StringComparison.CurrentCultureIgnoreCase) < 0)) continue;
+            hits.Add(new Hit { N = n, Snippet = Snippet(MarkdownView.Body(body), words[0]) });
+        }
+        // title matches first, then the most recently changed
+        return hits.OrderBy(h => words.All(w => h.N.Title.IndexOf(w, StringComparison.CurrentCultureIgnoreCase) >= 0) ? 0 : 1).ThenByDescending(h => h.N.Modified).ToList();
+    }
+
+    // The first line that has the word in it, tidied and cut to length.
+    static string Snippet(string body, string word)
+    {
+        foreach (var raw in body.Split('\n'))
+        {
+            if (raw.IndexOf(word, StringComparison.CurrentCultureIgnoreCase) < 0) continue;
+            var line = Regex.Replace(raw.Trim(), @"^(#{1,6}\s+|[-*+]\s+(\[[ xX]\]\s+)?|>\s?)", "");
+            return line.Length > 90 ? line.Substring(0, 90).TrimEnd() + "…" : line;
+        }
+        return "";
+    }
+}
+
+// One-way copy of the notes into another folder (an Obsidian vault, say). A note is copied when it's new there, or when
+// the copy there is older; one that was edited in the other folder since is never overwritten, and nothing is ever deleted.
+static class Mirror
+{
+    // Returns "n copied, m kept" style text; throws for a folder that can't work.
+    public static string Sync(string src, string dst, bool subfolders)
+    {
+        if (!Directory.Exists(src)) throw new IOException("The notes folder isn't there.");
+        string a = Path.GetFullPath(src).TrimEnd('\\') + "\\", b = Path.GetFullPath(dst).TrimEnd('\\') + "\\";
+        if (a.StartsWith(b, StringComparison.OrdinalIgnoreCase) || b.StartsWith(a, StringComparison.OrdinalIgnoreCase)) throw new IOException("The two folders can't be inside one another.");
+        Directory.CreateDirectory(dst);
+        int copied = 0, kept = 0;
+        foreach (var file in KinetikSuite.Markdown.Files(src, subfolders).ToList())
+        {
+            var target = Path.Combine(dst, file.Substring(a.Length));
+            if (File.Exists(target))
+            {
+                if (new FileInfo(target).Length == new FileInfo(file).Length && KinetikSuite.Hashes.FileHash(target) == KinetikSuite.Hashes.FileHash(file)) continue; // same
+                if (File.GetLastWriteTimeUtc(target) >= File.GetLastWriteTimeUtc(file)) { kept++; continue; } // edited over there
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+            File.Copy(file, target, true);
+            copied++;
+        }
+        return copied + " copied" + (kept > 0 ? ", " + kept + " newer in the other folder left alone" : "");
+    }
+}
+
+// Renders a note's Markdown into a RichTextBox: headings, tasks, bullets, quotes, code, and bold, italic, code and links inline.
+static class MarkdownView
+{
+    public class Run { public string Text; public bool Bold, Italic, Code, Link; }
+
+    static readonly Regex Inline = new Regex(@"(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|`[^`\n]+`|\[\[[^\]\n]+\]\]|\[[^\]\n]+\]\([^)\n]*\))");
+    static readonly Regex Heading = new Regex(@"^(#{1,6})\s+(.*)$"), Task = new Regex(@"^(\s*)[-*+]\s+\[([ xX])\]\s?(.*)$"), Bullet = new Regex(@"^(\s*)[-*+]\s+(.*)$"), Number = new Regex(@"^(\s*)(\d+[.)])\s+(.*)$");
+
+    // The note without its front matter.
+    public static string Body(string text)
+    {
+        text = (text ?? "").Replace("\r\n", "\n");
+        if (text.StartsWith("---\n"))
+        {
+            int end = text.IndexOf("\n---", 3);
+            if (end > 0) { int nl = text.IndexOf('\n', end + 1); text = nl < 0 ? "" : text.Substring(nl + 1); }
+        }
+        return text;
+    }
+
+    public static List<Run> Runs(string line)
+    {
+        var res = new List<Run>(); int pos = 0;
+        foreach (Match m in Inline.Matches(line))
+        {
+            if (m.Index > pos) res.Add(new Run { Text = line.Substring(pos, m.Index - pos) });
+            var t = m.Value;
+            if (t.StartsWith("**") || t.StartsWith("__")) res.Add(new Run { Text = t.Substring(2, t.Length - 4), Bold = true });
+            else if (t.StartsWith("[["))
+            {
+                var inner = t.Substring(2, t.Length - 4); int bar = inner.IndexOf('|');
+                res.Add(new Run { Text = bar >= 0 && bar < inner.Length - 1 ? inner.Substring(bar + 1) : bar >= 0 ? inner.Substring(0, bar) : inner, Link = true });
+            }
+            else if (t.StartsWith("[")) res.Add(new Run { Text = t.Substring(1, t.IndexOf("](") - 1), Link = true });
+            else if (t.StartsWith("`")) res.Add(new Run { Text = t.Substring(1, t.Length - 2), Code = true });
+            else res.Add(new Run { Text = t.Substring(1, t.Length - 2), Italic = true });
+            pos = m.Index + m.Length;
+        }
+        if (pos < line.Length) res.Add(new Run { Text = line.Substring(pos) });
+        return res;
+    }
+
+    static readonly Dictionary<string, Font> fonts = new Dictionary<string, Font>();
+    static Font F(float size, FontStyle style, string family = "Segoe UI")
+    {
+        var key = family + size + style;
+        Font f;
+        if (!fonts.TryGetValue(key, out f)) fonts[key] = f = new Font(family, size, style);
+        return f;
+    }
+
+    static void Add(RichTextBox b, string s, Font f, Color ink, Color? back = null)
+    {
+        b.SelectionStart = b.TextLength; b.SelectionLength = 0;
+        b.SelectionFont = f; b.SelectionColor = ink; b.SelectionBackColor = back ?? b.BackColor;
+        b.SelectedText = s;
+    }
+
+    static void AddRuns(RichTextBox b, string line, float size, FontStyle baseStyle, Color ink, Color accent, Color codeBack)
+    {
+        foreach (var r in Runs(line))
+        {
+            var st = baseStyle | (r.Bold ? FontStyle.Bold : 0) | (r.Italic ? FontStyle.Italic : 0) | (r.Link ? FontStyle.Underline : 0);
+            if (r.Code) Add(b, r.Text, F(size - 0.5f, baseStyle & FontStyle.Strikeout, "Consolas"), ink, codeBack);
+            else Add(b, r.Text, F(size, st), r.Link ? accent : ink);
+        }
+    }
+
+    public static void Render(RichTextBox b, string markdown, Color ink, Color soft, Color accent, Color codeBack)
+    {
+        b.Clear();
+        bool fence = false;
+        foreach (var line in Body(markdown).Split('\n'))
+        {
+            if (line.TrimStart().StartsWith("```") || line.TrimStart().StartsWith("~~~")) { fence = !fence; continue; }
+            Match m;
+            if (fence) { Add(b, line + "\n", F(12.5f, FontStyle.Regular, "Consolas"), ink, codeBack); continue; }
+            if ((m = Heading.Match(line)).Success)
+            {
+                int lv = m.Groups[1].Length;
+                Add(b, m.Groups[2].Value + "\n", F(lv == 1 ? 21 : lv == 2 ? 18 : lv == 3 ? 16 : 14.5f, FontStyle.Bold), ink);
+            }
+            else if ((m = Task.Match(line)).Success)
+            {
+                bool done = m.Groups[2].Value != " ";
+                Add(b, new string(' ', m.Groups[1].Length * 2) + (done ? "\u2611  " : "\u2610  "), F(14, FontStyle.Regular), done ? soft : accent);
+                AddRuns(b, m.Groups[3].Value + "\n", 14, done ? FontStyle.Strikeout : FontStyle.Regular, done ? soft : ink, accent, codeBack);
+            }
+            else if ((m = Bullet.Match(line)).Success)
+            {
+                Add(b, new string(' ', m.Groups[1].Length * 2) + "•  ", F(14, FontStyle.Regular), soft);
+                AddRuns(b, m.Groups[2].Value + "\n", 14, FontStyle.Regular, ink, accent, codeBack);
+            }
+            else if ((m = Number.Match(line)).Success)
+            {
+                Add(b, new string(' ', m.Groups[1].Length * 2) + m.Groups[2].Value + "  ", F(14, FontStyle.Regular), soft);
+                AddRuns(b, m.Groups[3].Value + "\n", 14, FontStyle.Regular, ink, accent, codeBack);
+            }
+            else if (line.StartsWith(">"))
+            {
+                Add(b, "\u2502  ", F(14, FontStyle.Regular), accent);
+                AddRuns(b, line.TrimStart('>', ' ') + "\n", 14, FontStyle.Italic, soft, accent, codeBack);
+            }
+            else if (Regex.IsMatch(line.Trim(), @"^(-{3,}|\*{3,}|_{3,})$")) Add(b, new string('\u2500', 36) + "\n", F(14, FontStyle.Regular), soft);
+            else AddRuns(b, line + "\n", 14, FontStyle.Regular, ink, accent, codeBack);
+        }
+        b.Select(0, 0);
+    }
+}
+
+// A note rendered as it reads, in its own window. Esc closes it.
+class PreviewForm : Form
+{
+    readonly RichTextBox box = new RichTextBox();
+
+    public PreviewForm(Note n, Action open)
+    {
+        var look = KinetikSuite.Look.Current;
+        float k = DeviceDpi / 96f;
+        Text = n.Title + " — Kinetik Notes";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        AutoScaleMode = AutoScaleMode.None;
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = look.Bg; ForeColor = look.Text; Font = new Font("Segoe UI", 9.5f);
+        ClientSize = new Size((int)(640 * k), (int)(740 * k));
+        MinimumSize = new Size((int)(380 * k), (int)(300 * k));
+        KeyPreview = true;
+        KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Close(); };
+
+        var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, BackColor = look.Bg, Padding = new Padding((int)(24 * k), (int)(8 * k), (int)(24 * k), (int)(14 * k)) };
+        var edit = new KinetikSuite.FlatButton("Open to edit", true, k) { Font = Font };
+        edit.Click += (s, e) => open();
+        bar.Controls.Add(edit);
+        var wrap = new Panel { Dock = DockStyle.Fill, BackColor = look.Bg, Padding = new Padding((int)(28 * k), (int)(22 * k), (int)(20 * k), (int)(6 * k)) };
+        box.Dock = DockStyle.Fill; box.BorderStyle = BorderStyle.None; box.BackColor = look.Bg; box.ForeColor = look.Text;
+        box.ReadOnly = true; box.DetectUrls = false; box.TabStop = false;
+        wrap.Controls.Add(box);
+        Controls.Add(wrap); Controls.Add(bar);
+        try { MarkdownView.Render(box, KinetikSuite.TextDocument.Read(n.Path).Text, look.Text, look.Sub, look.Accent, look.Field); }
+        catch (Exception ex) { box.Text = "Couldn't read the note: " + ex.Message; }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
+    }
+}
+
+// Search the notes' text. While it's open the notes on the desktop are narrowed to the matches.
+class SearchForm : Form
+{
+    readonly TextBox query = new TextBox();
+    readonly ListBox list = new ListBox { DrawMode = DrawMode.OwnerDrawFixed, BorderStyle = BorderStyle.None, IntegralHeight = false };
+    readonly Label status = new Label();
+    readonly System.Windows.Forms.Timer debounce = new System.Windows.Forms.Timer { Interval = 150 };
+    readonly Func<List<Note>> notes;
+    readonly Action<HashSet<string>> narrow;
+    readonly Action<Note> open, preview;
+    Dictionary<string, string> texts = new Dictionary<string, string>();
+    List<Find.Hit> hits = new List<Find.Hit>();
+
+    public SearchForm(Func<List<Note>> notes, Action<HashSet<string>> narrow, Action<Note> open, Action<Note> preview)
+    {
+        this.notes = notes; this.narrow = narrow; this.open = open; this.preview = preview;
+        var look = KinetikSuite.Look.Current;
+        float k = DeviceDpi / 96f;
+        Text = "Search notes";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        AutoScaleMode = AutoScaleMode.None;
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = look.Bg; ForeColor = look.Text; Font = new Font("Segoe UI", 10f);
+        ClientSize = new Size((int)(560 * k), (int)(520 * k));
+        MinimumSize = new Size((int)(360 * k), (int)(280 * k));
+        TopMost = true;
+        KeyPreview = true;
+        KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Escape) Close();
+            else if (e.KeyCode == Keys.Down && query.Focused && list.Items.Count > 0) { list.Focus(); if (list.SelectedIndex < 0) list.SelectedIndex = 0; e.Handled = true; }
+        };
+
+        var top = new Panel { Dock = DockStyle.Top, Height = (int)(64 * k), BackColor = look.Bg, Padding = new Padding((int)(18 * k), (int)(16 * k), (int)(18 * k), 0) };
+        query.Dock = DockStyle.Top; query.BorderStyle = BorderStyle.FixedSingle; query.BackColor = look.Field; query.ForeColor = look.Text; query.Font = new Font("Segoe UI", 12f);
+        top.Controls.Add(query);
+        status.Dock = DockStyle.Bottom; status.Height = (int)(28 * k); status.ForeColor = look.Sub; status.Padding = new Padding((int)(20 * k), (int)(4 * k), 0, 0);
+        list.Dock = DockStyle.Fill; list.BackColor = look.Bg; list.ForeColor = look.Text; list.ItemHeight = (int)(46 * k);
+        list.DrawItem += DrawHit;
+        list.DoubleClick += (s, e) => OpenSelected(false);
+        list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { OpenSelected(e.Control); e.Handled = true; } };
+        query.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { if (list.SelectedIndex < 0 && list.Items.Count > 0) list.SelectedIndex = 0; OpenSelected(e.Control); e.SuppressKeyPress = true; } };
+        query.TextChanged += (s, e) => { debounce.Stop(); debounce.Start(); };
+        debounce.Tick += (s, e) => { debounce.Stop(); Run(); };
+        Controls.Add(list); Controls.Add(status); Controls.Add(top);
+        status.Text = "Type to search the text of every note. Enter opens, Ctrl+Enter previews.";
+        Shown += (s, e) => { Activate(); query.Focus(); };
+        FormClosed += (s, e) => { debounce.Dispose(); narrow(null); };
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var t = Find.ReadAll(notes());
+            try { BeginInvoke((Action)(() => { texts = t; Run(); })); } catch { }
+        });
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
+    }
+
+    void Run()
+    {
+        hits = Find.Search(notes(), texts, query.Text);
+        list.BeginUpdate(); list.Items.Clear();
+        foreach (var h in hits) list.Items.Add(h);
+        list.EndUpdate();
+        if (query.Text.Trim() == "") { status.Text = "Type to search the text of every note. Enter opens, Ctrl+Enter previews."; narrow(null); return; }
+        status.Text = hits.Count == 0 ? "No note has all of those words." : hits.Count + " note" + (hits.Count == 1 ? "" : "s") + " · the desktop shows just these while this is open";
+        narrow(new HashSet<string>(hits.Select(h => h.N.Key)));
+    }
+
+    void OpenSelected(bool asPreview)
+    {
+        var h = list.SelectedItem as Find.Hit;
+        if (h == null) return;
+        if (asPreview) preview(h.N); else open(h.N);
+    }
+
+    void DrawHit(object sender, DrawItemEventArgs e)
+    {
+        var look = KinetikSuite.Look.Current;
+        e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        using (var bg = new SolidBrush(sel ? look.Card : look.Bg)) e.Graphics.FillRectangle(bg, e.Bounds);
+        if (e.Index < 0) return;
+        var h = (Find.Hit)list.Items[e.Index];
+        float pad = 20 * DeviceDpi / 96f;
+        using (var bold = new Font(Font, FontStyle.Bold))
+        using (var ink = new SolidBrush(look.Text))
+        using (var soft = new SolidBrush(look.Sub))
+        {
+            var fmt = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+            e.Graphics.DrawString(h.N.Title, bold, ink, new RectangleF(e.Bounds.X + pad, e.Bounds.Y + 5, e.Bounds.Width - pad * 2, 20), fmt);
+            e.Graphics.DrawString(h.Snippet != "" ? h.Snippet : System.IO.Path.GetFileName(h.N.Path), Font, soft, new RectangleF(e.Bounds.X + pad, e.Bounds.Y + 24, e.Bounds.Width - pad * 2, 20), fmt);
+        }
+    }
+}
+
+// Quick capture: a small window for jotting a note from any app. The first line is the title; Ctrl+Enter saves, Esc discards.
+class CaptureForm : Form
+{
+    readonly TextBox box = new TextBox();
+
+    public CaptureForm(string folder, Action<string> saved)
+    {
+        var look = KinetikSuite.Look.Current;
+        float k = DeviceDpi / 96f;
+        Text = "Quick note";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        AutoScaleMode = AutoScaleMode.None;
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = look.Bg; ForeColor = look.Text; Font = new Font("Segoe UI", 10f);
+        ClientSize = new Size((int)(480 * k), (int)(300 * k));
+        MinimumSize = new Size((int)(320 * k), (int)(220 * k));
+        TopMost = true;
+        KeyPreview = true;
+        Action save = () =>
+        {
+            try
+            {
+                var path = Notes.QuickNote(folder, box.Text);
+                if (path == null) { Close(); return; }
+                saved(path); Close();
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Kinetik Notes"); }
+        };
+        KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Escape) Close();
+            else if (e.KeyCode == Keys.Enter && e.Control) { save(); e.SuppressKeyPress = true; }
+        };
+        var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, BackColor = look.Bg, Padding = new Padding((int)(16 * k), (int)(6 * k), (int)(16 * k), (int)(12 * k)) };
+        var ok = new KinetikSuite.FlatButton("Save", true, k) { Font = Font }; ok.Click += (s, e) => save();
+        var cancel = new KinetikSuite.FlatButton("Discard", false, k) { Font = Font }; cancel.Click += (s, e) => Close();
+        var hint = new Label { Text = "First line is the title · Ctrl+Enter saves", ForeColor = look.Sub, AutoSize = true, Margin = new Padding((int)(12 * k), (int)(8 * k), 0, 0) };
+        bar.Controls.Add(ok); bar.Controls.Add(cancel); bar.Controls.Add(hint);
+        box.Dock = DockStyle.Fill; box.Multiline = true; box.AcceptsReturn = true; box.ScrollBars = ScrollBars.Vertical; box.BorderStyle = BorderStyle.None;
+        box.BackColor = look.Field; box.ForeColor = look.Text; box.Font = new Font("Segoe UI", 11.5f);
+        var wrap = new Panel { Dock = DockStyle.Fill, BackColor = look.Bg, Padding = new Padding((int)(16 * k), (int)(16 * k), (int)(16 * k), (int)(4 * k)) };
+        wrap.Controls.Add(box);
+        Controls.Add(wrap); Controls.Add(bar);
+        Shown += (s, e) => { Activate(); box.Focus(); };
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
     }
 }
 
@@ -1056,6 +1456,12 @@ class NotesForm : Form
     Note menuNote;
     DateTime today = DateTime.Today;
     SettingsForm settings;
+    SearchForm searchForm;
+    CaptureForm capture;
+    HashSet<string> searchKeys; // while the search window is open: the notes that match, else null
+    readonly System.Windows.Forms.Timer mirrorTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+    bool mirroring, mirrorAgain;
+    public string MirrorStatus = "";
 
     public NotesForm(string openSettings)
     {
@@ -1078,6 +1484,7 @@ class NotesForm : Form
         reload.Tick += (s, e) => { reload.Stop(); LoadNotes(); };
         midnight.Tick += (s, e) => { today = DateTime.Today; LoadNotes(); }; // due badges change at midnight
         midnight.Start();
+        mirrorTimer.Tick += (s, e) => { mirrorTimer.Stop(); MirrorNow(); };
         Restyle();
         Load += (s, e) => LoadNotes();
         if (c.Folder == "" || openSettings != null) Load += (s, e) => BeginInvoke((Action)(() => OpenSettings(openSettings ?? "General")));
@@ -1103,6 +1510,7 @@ class NotesForm : Form
     {
         if (m.Msg == 0x21) { m.Result = (IntPtr)3; return; } // WM_MOUSEACTIVATE → MA_NOACTIVATE: clicking it never steals focus
         if (m.Msg == 0x312 && (int)m.WParam == 1) { SetHidden(!hidden); return; } // WM_HOTKEY
+        if (m.Msg == 0x312 && (int)m.WParam == 2) { QuickCapture(); return; }
         if (m.Msg == 0x46 && layer == 0) // WM_WINDOWPOSCHANGING: "on the desktop" keeps it beneath other windows
         {
             var wp = (WINDOWPOS)Marshal.PtrToStructure(m.LParam, typeof(WINDOWPOS));
@@ -1112,13 +1520,15 @@ class NotesForm : Form
     }
 
     protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); SyncHotkey(); }
-    protected override void OnHandleDestroyed(EventArgs e) { UnregisterHotKey(Handle, 1); base.OnHandleDestroyed(e); }
+    protected override void OnHandleDestroyed(EventArgs e) { UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); base.OnHandleDestroyed(e); }
 
     void SyncHotkey()
     {
         if (!IsHandleCreated) return;
         UnregisterHotKey(Handle, 1);
         if (c.Hotkey) RegisterHotKey(Handle, 1, 0x1 | 0x2 | 0x4000, (uint)Keys.N); // Ctrl+Alt+N, no auto-repeat
+        UnregisterHotKey(Handle, 2);
+        if (c.QuickCapture) RegisterHotKey(Handle, 2, 0x1 | 0x2 | 0x4000, (uint)Keys.Space); // Ctrl+Alt+Space
     }
 
     void SetHidden(bool h)
@@ -1134,7 +1544,7 @@ class NotesForm : Form
         if (disposing)
         {
             if (watcher != null) watcher.Dispose();
-            tray.Dispose(); reload.Dispose(); midnight.Dispose(); menu.Dispose(); DisposeFonts();
+            tray.Dispose(); reload.Dispose(); midnight.Dispose(); mirrorTimer.Dispose(); menu.Dispose(); DisposeFonts();
         }
         base.Dispose(disposing);
     }
@@ -1206,6 +1616,8 @@ class NotesForm : Form
             menu.Items.Add(new ToolStripMenuItem(n.Title) { Enabled = false });
             menu.Items.Add(Item("Open", false, () => Notes.Open(n.Path, c.DoubleClick == 2 ? 0 : c.DoubleClick)));
             menu.Items.Add(Item("Show in File Explorer", false, () => Notes.Open(n.Path, 2)));
+            menu.Items.Add(Item("Preview", false, () => Preview(n)));
+            menu.Items.Add(Item("Export…", false, () => Export(n)));
             var colour = new ToolStripMenuItem("Colour");
             for (int i = 0; i < Notes.ColourNames.Length; i++)
             {
@@ -1254,6 +1666,11 @@ class NotesForm : Form
             newNote.DropDownItems.Add(Item("Edit templates…", false, () => { try { Process.Start("explorer.exe", "\"" + Notes.TemplatesDir(c.Folder) + "\""); } catch { } }));
         }
         menu.Items.Add(newNote);
+        menu.Items.Add(Item("Quick note…", false, QuickCapture));
+        menu.Items[menu.Items.Count - 1].Enabled = ok;
+        if (c.QuickCapture) ((ToolStripMenuItem)menu.Items[menu.Items.Count - 1]).ShortcutKeyDisplayString = "Ctrl+Alt+Space";
+        menu.Items.Add(Item("Search notes…", false, OpenSearch));
+        menu.Items[menu.Items.Count - 1].Enabled = ok;
         menu.Items.Add(Item(hidden ? "Show notes" : "Hide notes", false, () => SetHidden(!hidden)));
         if (c.Hotkey) ((ToolStripMenuItem)menu.Items[menu.Items.Count - 1]).ShortcutKeyDisplayString = "Ctrl+Alt+N";
         menu.Items.Add(Item("Open notes folder", false, () => { if (Directory.Exists(c.Folder)) try { Process.Start("explorer.exe", "\"" + c.Folder + "\""); } catch { } }));
@@ -1340,6 +1757,65 @@ class NotesForm : Form
         }
     }
 
+    // ---- search, preview, quick capture, export and the folder mirror
+    void OpenSearch()
+    {
+        if (searchForm != null && !searchForm.IsDisposed) { searchForm.Activate(); return; }
+        searchForm = new SearchForm(() => all, SetSearch, n => Notes.Open(n.Path, c.DoubleClick == 2 ? 0 : c.DoubleClick), Preview);
+        searchForm.Show();
+    }
+
+    // Narrows the notes on the desktop to the matches of the open search (null = back to normal).
+    void SetSearch(HashSet<string> keys)
+    {
+        searchKeys = keys;
+        ApplyNotes(all, message);
+    }
+
+    void Preview(Note n) { new PreviewForm(n, () => Notes.Open(n.Path, c.DoubleClick == 2 ? 0 : c.DoubleClick)).Show(); }
+
+    void Export(Note n)
+    {
+        using (var d = new SaveFileDialog { Title = "Export note", Filter = "Markdown (*.md)|*.md", FileName = Path.GetFileName(n.Path), OverwritePrompt = true })
+            if (d.ShowDialog() == DialogResult.OK)
+                try { File.Copy(n.Path, d.FileName, true); } catch (Exception ex) { MessageBox.Show(ex.Message, "Kinetik Notes"); }
+    }
+
+    // A small window for jotting a note from any app (Ctrl+Alt+Space). The watcher picks the new file up.
+    void QuickCapture()
+    {
+        if (!Directory.Exists(c.Folder)) { OpenSettings("General"); return; }
+        if (capture != null && !capture.IsDisposed) { capture.Activate(); return; }
+        capture = new CaptureForm(c.Folder, path => tray.ShowBalloonTip(3000, "Note saved", Path.GetFileNameWithoutExtension(path), ToolTipIcon.None));
+        capture.Show();
+        capture.Activate();
+    }
+
+    // Copies new and changed notes into the mirror folder, a few seconds after the notes change. One run at a time.
+    public void MirrorNow()
+    {
+        var src = c.Folder; var dst = (c.MirrorFolder ?? "").Trim().Trim('"'); bool sub = c.Subfolders;
+        if (dst == "" || Program.Demo || !Directory.Exists(src)) return;
+        if (mirroring) { mirrorAgain = true; return; }
+        mirroring = true;
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string result;
+            try { result = Mirror.Sync(src, dst, sub); } catch (Exception ex) { result = "couldn't sync: " + ex.Message; }
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    mirroring = false;
+                    MirrorStatus = DateTime.Now.ToString("t") + ", " + result;
+                    if (settings != null && !settings.IsDisposed) settings.MirrorChanged();
+                    if (mirrorAgain) { mirrorAgain = false; MirrorNow(); }
+                }));
+            }
+            catch { }
+        });
+    }
+
     // ---- loading the notes and watching the folder
     void Watch()
     {
@@ -1389,6 +1865,7 @@ class NotesForm : Form
         IEnumerable<Note> q = all.Where(n => !Settings.InList(c.Hidden, n.Key));
         if (c.HideFinishedNotes) q = q.Where(n => n.Tasks == 0 || n.DoneTasks < n.Tasks);
         if (tags.Count > 0) q = q.Where(n => tags.Any(t => n.Tags.Contains(t)));
+        if (searchKeys != null) q = q.Where(n => searchKeys.Contains(n.Key));
         IOrderedEnumerable<Note> o = q.OrderBy(n => c.PinnedFirst && n.Pinned ? 0 : 1);
         if (c.Sort == 1) o = o.ThenBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase);
         else if (c.Sort == 2) o = o.ThenByDescending(n => n.Modified);
@@ -1398,6 +1875,7 @@ class NotesForm : Form
         if (message == null && notes.Count == 0) message = all.Count == 0 ? "No notes yet. Right-click → New note." : "Every note is hidden or filtered out. Right-click → Settings… → Notes.";
         Relayout();
         if (settings != null && !settings.IsDisposed) settings.NotesChanged();
+        if (c.MirrorFolder != "" && searchKeys == null) { mirrorTimer.Stop(); mirrorTimer.Start(); }
     }
 
     IEnumerable<NoteLine> LinesToShow(Note n)
@@ -1986,6 +2464,7 @@ class SettingsForm : Form
 
     // The note list on the Notes page follows the folder; other pages don't depend on it.
     public void NotesChanged() { if (Page == "Notes" && !(ActiveControl is TextBox)) RefreshPage(); }
+    public void MirrorChanged() { if (Page == "General" && !(ActiveControl is TextBox)) RefreshPage(); }
 
     void Apply() { applyTimer.Stop(); applyTimer.Start(); }
 
@@ -2109,9 +2588,26 @@ class SettingsForm : Form
         Hint("Blank note template:", 1);
         list.Controls.Add(tpl);
 
+        Header("Copy to another folder");
+        Hint("Keeps a copy of your notes in another folder, such as an Obsidian vault, a few seconds after they change. A note that was edited in that folder afterwards is never overwritten, and nothing is deleted.", 3);
+        var mirror = Field1(c.MirrorFolder, 300, v => { v = v.Trim().Trim('"'); if (v != c.MirrorFolder) { c.MirrorFolder = v; Apply(); } });
+        Row("Folder", c.MirrorFolder == "" ? "Off while this is empty" : owner.MirrorStatus == "" ? "Not synced yet" : "Last: " + owner.MirrorStatus, mirror);
+        var mirrorTools = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BackColor = CardBg, Margin = Padding.Empty };
+        var mirrorBrowse = Btn("Browse…", (s, e) =>
+        {
+            using (var dlg = new FolderBrowserDialog { Description = "Choose the folder to copy your notes into", SelectedPath = Directory.Exists(c.MirrorFolder) ? c.MirrorFolder : "" })
+                if (dlg.ShowDialog(this) == DialogResult.OK) { c.MirrorFolder = dlg.SelectedPath; owner.ApplySettings(); RefreshPage(); }
+        });
+        var mirrorNow = Btn("Sync now", (s, e) => { owner.ApplySettings(); owner.MirrorNow(); });
+        mirrorBrowse.Margin = new Padding(0, 0, S(6), 0); mirrorNow.Margin = Padding.Empty;
+        mirrorTools.Controls.Add(mirrorBrowse); mirrorTools.Controls.Add(mirrorNow);
+        mirrorTools.Size = mirrorTools.PreferredSize;
+        Row("Choose or sync", null, mirrorTools);
+
         Header("Behaviour");
         Choice("Double-clicking a note", null, new[] { "Opens it in Obsidian", "Opens it in the default editor", "Shows it in File Explorer" }, c.DoubleClick, i => c.DoubleClick = i, 230);
         Check("Show / hide with Ctrl+Alt+N", "Works from any app. Clicking the tray icon does the same.", c.Hotkey, v => c.Hotkey = v);
+        Check("Quick note with Ctrl+Alt+Space", "A small window for jotting a note from any app. The first line is its title.", c.QuickCapture, v => c.QuickCapture = v);
         Check("Run at startup", null, Startup.IsOn, v => Startup.Set(v));
 
         Header("Backup");

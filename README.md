@@ -14,6 +14,13 @@ It's a small portable app with no installer and no account. It's a companion to 
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please [open an issue](../../issues).
 
+## What's new in 2.1
+
+- **Search:** *Search notes…* in the right-click menu searches the full text of every note (every word has to match; titles and tags count). While it's open the notes on the desktop narrow to the matches.
+- **Preview:** right-click a note → *Preview* shows it rendered: headings, ticked and unticked tasks, bullets, quotes, code, bold, italic and links.
+- **Quick note:** **Ctrl+Alt+Space**, from any app, opens a small window to jot a note. The first line becomes the title and file name; Ctrl+Enter saves.
+- **Copy to another folder:** Settings → General can keep a copy of your notes in another folder, such as an Obsidian vault. A note that was edited in that folder afterwards is never overwritten, and nothing is deleted. Right-click a note → *Export…* saves a single note anywhere.
+
 ## What's new in 2.0
 
 Part of the Kinetik apps, with [Kinetik Stats](https://github.com/WastedDesigner/Kinetik) (the taskbar monitor, called just Kinetik until its v4.0), [Kinetik Hub](https://github.com/WastedDesigner/KinetikHub) and the other desktop widgets.
