@@ -56,17 +56,17 @@ Settings are kept in `HKCU\Software\KinetikNotes`. Nothing is sent anywhere: the
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both.
+Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
 
 ## Building from source
 
-No SDK needed: `build.bat` compiles `KinetikNotes.cs` with the .NET Framework compiler that ships with Windows. `build.bat package` also makes `KinetikNotes.zip` for a release.
+Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikNotes.exe` in this folder.
 
 `KinetikNotes.exe --demo` runs a separate copy with made-up notes in a temporary folder that reads and saves no settings, which is how the screenshots were made. Add `--theme Navy` (or any theme name) to pick its theme.
 
 ## Tests and packaging
 
-`python tests/run-tests.py` runs the regression checks (no window opens). `build.bat package` builds the exe and makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
+`python tests/run-tests.py` runs the regression checks (no window opens). `powershell -File package.ps1 -App KinetikNotes` (after the publish above) makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
 
 When you tick a task, Kinetik Notes keeps the note's previous version in a `.kinetik-recovery` folder beside it. If the file changed after the note was shown (in Obsidian, say), the tick is refused: refresh and try again.
 
