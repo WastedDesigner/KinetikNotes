@@ -56,11 +56,11 @@ Settings are kept in `HKCU\Software\KinetikNotes`. Nothing is sent anywhere: the
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
+Windows 10 or 11 (64-bit) with the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64).
 
 ## Building from source
 
-Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikNotes.exe` in this folder.
+Needs the .NET 10 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikNotes.exe` in this folder.
 
 `KinetikNotes.exe --demo` runs a separate copy with made-up notes in a temporary folder that reads and saves no settings, which is how the screenshots were made. Add `--theme Navy` (or any theme name) to pick its theme.
 
